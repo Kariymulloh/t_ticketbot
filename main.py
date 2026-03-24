@@ -56,8 +56,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+async def on_startup(app: Application) -> None:
+    """Initialize database in the same event loop as PTB."""
+    await db.init_db()
+    logger.info("Ma'lumotlar bazasi tayyor")
+
+
 def build_application():
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(on_startup).build()
 
     # ── Admin: Create Event ConversationHandler ────────────────────────────────
     create_event_conv = ConversationHandler(
@@ -356,12 +362,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # Run init_db then start polling
-    import asyncio
-
-    async def startup():
-        await db.init_db()
-        logger.info("Ma'lumotlar bazasi tayyor")
-
-    asyncio.run(startup())
     main()
