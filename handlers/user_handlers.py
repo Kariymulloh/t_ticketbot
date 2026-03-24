@@ -38,7 +38,8 @@ async def start_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Admin panel
     if is_admin:
         from handlers.admin_events import admin_panel
-        return await admin_panel(update, ctx)
+        await admin_panel(update, ctx)
+        return ConversationHandler.END
 
     # Regular user: show upcoming events
     events = await db.get_active_events()
@@ -47,12 +48,13 @@ async def start_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "👋 Salom! Hozirda faol tadbirlar yo'q.\n"
             "Kuting, tez orada yangi tadbirlar qo'shiladi! 🎉"
         )
-        return
+        return ConversationHandler.END
 
     await update.message.reply_text(
         "👋 Salom! Quyidagi tadbirlardan birini tanlang:",
         reply_markup=user_events_keyboard(events)
     )
+    return ConversationHandler.END
 
 
 async def start_event_registration(update: Update, ctx: ContextTypes.DEFAULT_TYPE, event_id: int):
@@ -61,14 +63,14 @@ async def start_event_registration(update: Update, ctx: ContextTypes.DEFAULT_TYP
 
     if not event or not event["is_active"]:
         await update.message.reply_text("❌ Bu tadbir mavjud emas yoki faol emas.")
-        return
+        return ConversationHandler.END
 
     # Check existing registration
     existing = await db.get_user_event_registration(user.id, event_id)
     if existing and existing["status"] in ("confirmed", "completed"):
         # Show their ticket
         await show_registration_ticket(update, ctx, existing["id"])
-        return
+        return ConversationHandler.END
 
     # Check mandatory channels
     channels = await db.get_event_channels(event_id)
@@ -82,10 +84,10 @@ async def start_event_registration(update: Update, ctx: ContextTypes.DEFAULT_TYP
                 reply_markup=subscription_check_keyboard(not_subbed, event_id)
             )
             ctx.user_data["pending_event_id"] = event_id
-            return
+            return ConversationHandler.END
 
     # Start questions
-    await begin_questions(update, ctx, event_id, user.id)
+    return await begin_questions(update, ctx, event_id, user.id)
 
 
 async def check_subscription_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -100,7 +102,7 @@ async def check_subscription_callback(update: Update, ctx: ContextTypes.DEFAULT_
         await update.callback_query.answer(
             "❌ Siz hali barcha kanallarga obuna bo'lmadingiz!", show_alert=True
         )
-        return
+        return ConversationHandler.END
 
     # All subscribed — start registration
     event = await db.get_event(event_id)
@@ -111,7 +113,7 @@ async def check_subscription_callback(update: Update, ctx: ContextTypes.DEFAULT_
         pass
 
     # Create fake message to reuse begin_questions
-    await begin_questions(update, ctx, event_id, user_id, via_callback=True)
+    return await begin_questions(update, ctx, event_id, user_id, via_callback=True)
 
 
 async def begin_questions(update, ctx, event_id, user_id, via_callback=False):
@@ -126,7 +128,7 @@ async def begin_questions(update, ctx, event_id, user_id, via_callback=False):
         target = update.callback_query if via_callback else update
         send = target.message.reply_text if via_callback else update.message.reply_text
         await send(msg_text, parse_mode="HTML")
-        return
+        return ConversationHandler.END
 
     reg_id = await db.create_registration(event_id, user_id)
     ctx.user_data["reg_id"] = reg_id
@@ -661,12 +663,12 @@ async def user_event_detail(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     event = await db.get_event(event_id)
     if not event:
         await update.callback_query.answer("Tadbir topilmadi!", show_alert=True)
-        return
+        return ConversationHandler.END
 
     existing = await db.get_user_event_registration(user_id, event_id)
     if existing and existing["status"] in ("confirmed", "completed"):
         await show_registration_ticket(update, ctx, existing["id"], via_callback=True)
-        return
+        return ConversationHandler.END
 
     # Show event info and start registration
     channels = await db.get_event_channels(event_id)
@@ -680,14 +682,14 @@ async def user_event_detail(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 reply_markup=subscription_check_keyboard(not_subbed, event_id)
             )
             ctx.user_data["pending_event_id"] = event_id
-            return
+            return ConversationHandler.END
 
     try:
         await update.callback_query.message.delete()
     except Exception:
         pass
 
-    await begin_questions(update, ctx, event_id, user_id, via_callback=True)
+    return await begin_questions(update, ctx, event_id, user_id, via_callback=True)
 
 
 async def show_registration_ticket(update, ctx, reg_id, via_callback=False):

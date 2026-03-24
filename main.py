@@ -241,6 +241,7 @@ def build_application():
     # ── User: Registration ConversationHandler ─────────────────────────────────
     user_reg_conv = ConversationHandler(
         entry_points=[
+            CommandHandler("start", start_command),
             CallbackQueryHandler(user_event_detail, pattern="^user_event:"),
             CallbackQueryHandler(check_subscription_callback, pattern="^check_sub:"),
         ],
@@ -274,7 +275,6 @@ def build_application():
     app.add_handler(user_reg_conv)
 
     # Commands
-    app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("admin", admin_panel))
 
     # Admin callbacks
