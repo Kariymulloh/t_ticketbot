@@ -1,7 +1,9 @@
 import json
 import logging
+from io import BytesIO
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
+from openpyxl import Workbook
 
 import database as db
 from keyboards import (
@@ -891,12 +893,83 @@ async def event_registrations(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     total = len(regs)
     confirmed = sum(1 for r in regs if r["status"] in ("confirmed", "completed"))
     pending = sum(1 for r in regs if r["status"] == "payment_pending")
+    attended = sum(1 for r in regs if r["attendance_status"] == "attended")
+    not_attended = sum(1 for r in regs if r["attendance_status"] == "not_attended")
 
     await update.callback_query.edit_message_text(
         f"📋 <b>{event['name']}</b> — Ro'yxat\n\n"
         f"Jami: {total}\n"
         f"✅ Tasdiqlangan: {confirmed}\n"
-        f"⏳ Kutilayotgan: {pending}",
+        f"⏳ Kutilayotgan: {pending}\n"
+        f"🟢 Kelgan: {attended}\n"
+        f"🔴 Kelmagan: {not_attended}",
         parse_mode="HTML",
-        reply_markup=back_btn(f"admin_event:{event_id}")
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📥 Excel yuklab olish", callback_data=f"event_regs_export:{event_id}")],
+            [InlineKeyboardButton("🔙 Orqaga", callback_data=f"admin_event:{event_id}")],
+        ])
+    )
+
+
+async def export_event_registrations_excel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer("Excel tayyorlanmoqda...")
+    event_id = int(update.callback_query.data.split(":")[1])
+    event = await db.get_event(event_id)
+    regs = await db.get_event_registrations(event_id)
+    questions = await db.get_questions(event_id)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Registrations"
+
+    headers = [
+        "Registration ID",
+        "Status",
+        "Attendance",
+        "User ID",
+        "Username",
+        "First name",
+        "Last name",
+        "Section",
+        "Registered at",
+        "Confirmed at",
+    ]
+    for q in questions:
+        headers.append(q["question_text"])
+    ws.append(headers)
+
+    for reg in regs:
+        user = await db.get_user(reg["user_id"])
+        answers = await db.get_registration_answers(reg["id"])
+        ans_map = {a["question_text"]: a["answer_text"] for a in answers}
+        section_name = ""
+        if reg["section_id"]:
+            section = await db.get_section(reg["section_id"])
+            section_name = section["name"] if section else ""
+
+        row = [
+            reg["id"],
+            reg["status"],
+            reg["attendance_status"],
+            reg["user_id"],
+            user["username"] if user else "",
+            user["first_name"] if user else "",
+            user["last_name"] if user else "",
+            section_name,
+            reg["registered_at"],
+            reg["confirmed_at"],
+        ]
+        for q in questions:
+            row.append(ans_map.get(q["question_text"], ""))
+        ws.append(row)
+
+    bio = BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+    bio.name = f"{event['name']}_registrations.xlsx".replace(" ", "_")
+
+    await update.callback_query.message.reply_document(
+        document=bio,
+        filename=bio.name,
+        caption=f"📥 {event['name']} registratsiya ro'yxati",
     )

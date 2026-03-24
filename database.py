@@ -71,6 +71,7 @@ async def init_db():
                 event_id INTEGER,
                 user_id INTEGER,
                 status TEXT DEFAULT 'questions',
+                attendance_status TEXT DEFAULT 'unknown',
                 section_id INTEGER,
                 registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 confirmed_at TIMESTAMP,
@@ -116,6 +117,13 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
+        # Lightweight migration for existing databases
+        async with db.execute("PRAGMA table_info(registrations)") as cur:
+            cols = [row[1] for row in await cur.fetchall()]
+        if "attendance_status" not in cols:
+            await db.execute(
+                "ALTER TABLE registrations ADD COLUMN attendance_status TEXT DEFAULT 'unknown'"
+            )
 
         # Ensure main admin exists
         await db.execute(
@@ -461,10 +469,25 @@ async def update_registration_status(reg_id, status, section_id=None):
                 (status, section_id, reg_id)
             )
         else:
-            await db.execute(
-                "UPDATE registrations SET status=?, confirmed_at=CURRENT_TIMESTAMP WHERE id=?",
-                (status, reg_id)
-            )
+            if status in ("confirmed", "completed"):
+                await db.execute(
+                    "UPDATE registrations SET status=?, confirmed_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (status, reg_id)
+                )
+            else:
+                await db.execute(
+                    "UPDATE registrations SET status=? WHERE id=?",
+                    (status, reg_id)
+                )
+        await db.commit()
+
+
+async def set_registration_attendance(reg_id, attendance_status):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE registrations SET attendance_status=? WHERE id=?",
+            (attendance_status, reg_id),
+        )
         await db.commit()
 
 
@@ -505,10 +528,10 @@ async def get_event_registrations(event_id, status=None):
 
 
 async def get_users_attended_event(event_id):
-    """Users who completed registration (confirmed or completed)"""
+    """Users marked as attended."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT user_id FROM registrations WHERE event_id=? AND status IN ('confirmed','completed')",
+            "SELECT DISTINCT user_id FROM registrations WHERE event_id=? AND attendance_status='attended'",
             (event_id,)
         ) as cur:
             rows = await cur.fetchall()
@@ -516,10 +539,11 @@ async def get_users_attended_event(event_id):
 
 
 async def get_users_not_attended_event(event_id):
-    """All registered users minus those who attended"""
+    """Users not marked as attended."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT user_id FROM registrations WHERE event_id=? AND status NOT IN ('confirmed','completed')",
+            """SELECT DISTINCT user_id FROM registrations
+               WHERE event_id=? AND status IN ('confirmed','completed') AND attendance_status!='attended'""",
             (event_id,)
         ) as cur:
             rows = await cur.fetchall()

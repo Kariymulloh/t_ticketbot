@@ -208,6 +208,23 @@ def choices_keyboard(choices):
     return InlineKeyboardMarkup(rows)
 
 
+def phone_request_keyboard():
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton("📱 Telefon raqamni ulashish", request_contact=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
+def attendance_mark_keyboard(reg_id):
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Keldi", callback_data=f"att:yes:{reg_id}"),
+            InlineKeyboardButton("❌ Kelmadi", callback_data=f"att:no:{reg_id}"),
+        ]
+    ])
+
+
 def permissions_keyboard(current_perms):
     rows = []
     perm_labels = {
