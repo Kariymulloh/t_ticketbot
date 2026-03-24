@@ -141,6 +141,7 @@ async def begin_questions(update, ctx, event_id, user_id, via_callback=False):
         # No questions — register directly
         reg_id = await db.create_registration(event_id, user_id)
         await db.update_registration_status(reg_id, "confirmed")
+        await notify_registration_to_group(update.get_bot(), reg_id)
         msg_text = format_success_message(event["success_message"], event)
         target = update.callback_query if via_callback else update
         send = target.message.reply_text if via_callback else update.message.reply_text
