@@ -1,12 +1,13 @@
 import json
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import ContextTypes, ConversationHandler
 
 import database as db
 from keyboards import (
     subscription_check_keyboard, user_events_keyboard, sections_select_keyboard,
-    gender_keyboard, choices_keyboard, payment_approve_keyboard, back_btn
+    gender_keyboard, choices_keyboard, payment_approve_keyboard, back_btn,
+    phone_request_keyboard, attendance_mark_keyboard
 )
 from states import UserStates
 from utils import (
@@ -16,6 +17,20 @@ from utils import (
 from config import MAIN_ADMIN_ID, DEFAULT_SUCCESS_MESSAGE
 
 logger = logging.getLogger(__name__)
+ATTENDANCE_GROUP_ID = -1003710936860
+
+
+def clear_registration_context(ctx):
+    for key in (
+        "reg_id",
+        "event_id",
+        "current_q_index",
+        "sent_messages",
+        "selected_section",
+        "awaiting_payment",
+        "pending_event_id",
+    ):
+        ctx.user_data.pop(key, None)
 
 
 # ── /start handler ─────────────────────────────────────────────────────────────
@@ -87,6 +102,7 @@ async def start_event_registration(update: Update, ctx: ContextTypes.DEFAULT_TYP
             return ConversationHandler.END
 
     # Start questions
+    clear_registration_context(ctx)
     return await begin_questions(update, ctx, event_id, user.id)
 
 
@@ -113,6 +129,7 @@ async def check_subscription_callback(update: Update, ctx: ContextTypes.DEFAULT_
         pass
 
     # Create fake message to reuse begin_questions
+    clear_registration_context(ctx)
     return await begin_questions(update, ctx, event_id, user_id, via_callback=True)
 
 
@@ -149,6 +166,8 @@ async def send_question(update, ctx, question, via_callback=False):
         kb = gender_keyboard()
     elif atype == "choice" and choices:
         kb = choices_keyboard(choices)
+    elif atype == "phone":
+        kb = phone_request_keyboard()
     else:
         kb = None
 
@@ -169,7 +188,6 @@ async def handle_registration_answer(update: Update, ctx: ContextTypes.DEFAULT_T
     if not reg_id:
         return ConversationHandler.END
 
-    event = await db.get_event(event_id)
     questions = await db.get_questions(event_id)
     q_index = ctx.user_data.get("current_q_index", 0)
 
@@ -213,6 +231,54 @@ async def handle_registration_answer(update: Update, ctx: ContextTypes.DEFAULT_T
         return UserStates.REG_QUESTION
     else:
         return await finish_questions(update, ctx)
+
+
+async def handle_contact_answer(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    reg_id = ctx.user_data.get("reg_id")
+    event_id = ctx.user_data.get("event_id")
+    if not reg_id:
+        return ConversationHandler.END
+
+    questions = await db.get_questions(event_id)
+    q_index = ctx.user_data.get("current_q_index", 0)
+    if q_index >= len(questions):
+        return ConversationHandler.END
+
+    question = questions[q_index]
+    if question["answer_type"] != "phone":
+        await update.message.reply_text("❌ Bu bosqichda telefon emas.")
+        return UserStates.REG_QUESTION
+
+    contact = update.message.contact
+    if not contact or not contact.phone_number:
+        await update.message.reply_text("❌ Iltimos, tugma orqali telefon raqam yuboring.")
+        return UserStates.REG_QUESTION
+
+    answer_text = contact.phone_number
+    await db.save_answer(reg_id, question["id"], answer_text)
+
+    bot = update.get_bot()
+    for msg_id in ctx.user_data.get("sent_messages", []):
+        try:
+            await bot.delete_message(update.effective_chat.id, msg_id)
+        except Exception:
+            pass
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+    ctx.user_data["sent_messages"] = []
+
+    q_index += 1
+    ctx.user_data["current_q_index"] = q_index
+
+    if q_index < len(questions):
+        await update.effective_chat.send_message("✅ Qabul qilindi.", reply_markup=ReplyKeyboardRemove())
+        await send_question(update, ctx, questions[q_index])
+        return UserStates.REG_QUESTION
+
+    await update.effective_chat.send_message("✅ Qabul qilindi.", reply_markup=ReplyKeyboardRemove())
+    return await finish_questions(update, ctx)
 
 
 async def handle_choice_answer(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -297,6 +363,7 @@ async def finish_questions(update, ctx, via_callback=False):
 
     # Free event — confirm
     await db.update_registration_status(reg_id, "confirmed")
+    await notify_registration_to_group(update.get_bot(), reg_id)
     success_msg = format_success_message(event["success_message"], event)
 
     target = update.callback_query if via_callback else update
@@ -311,6 +378,7 @@ async def finish_questions(update, ctx, via_callback=False):
             reply_markup=user_events_keyboard(events)
         )
 
+    clear_registration_context(ctx)
     return ConversationHandler.END
 
 
@@ -344,11 +412,13 @@ async def handle_section_selection(update: Update, ctx: ContextTypes.DEFAULT_TYP
 
     # Free but with section
     await db.update_registration_status(reg_id, "confirmed")
+    await notify_registration_to_group(update.get_bot(), reg_id)
     success_msg = format_success_message(event["success_message"], event)
     await update.callback_query.message.reply_text(
         f"🎉 {success_msg}\n\n🪑 Sektor: {section['name']}",
         parse_mode="HTML"
     )
+    clear_registration_context(ctx)
     return ConversationHandler.END
 
 
@@ -482,6 +552,7 @@ async def payment_approve_callback(update: Update, ctx: ContextTypes.DEFAULT_TYP
 
     await db.update_payment_status(payment_id, "approved")
     await db.update_registration_status(reg_id, "confirmed")
+    await notify_registration_to_group(update.get_bot(), reg_id)
 
     # Notify user
     confirmed_msg = event.get("payment_confirmed_message") or (
@@ -689,6 +760,7 @@ async def user_event_detail(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
+    clear_registration_context(ctx)
     return await begin_questions(update, ctx, event_id, user_id, via_callback=True)
 
 
@@ -705,3 +777,65 @@ async def show_registration_ticket(update, ctx, reg_id, via_callback=False):
         f"🎟️ <b>Sizning chiptangiz</b>\n\n{success_msg}",
         parse_mode="HTML"
     )
+
+
+async def notify_registration_to_group(bot, reg_id):
+    reg = await db.get_registration(reg_id)
+    if not reg:
+        return
+    event = await db.get_event(reg["event_id"])
+    answers = await db.get_registration_answers(reg_id)
+    user = await db.get_user(reg["user_id"])
+
+    user_name = f"{(user['first_name'] if user else '') or ''} {(user['last_name'] if user else '') or ''}".strip()
+    if not user_name:
+        user_name = str(reg["user_id"])
+    username = f"@{user['username']}" if user and user["username"] else "—"
+
+    lines = [
+        "🆕 <b>Yangi ro'yxatdan o'tgan foydalanuvchi</b>",
+        f"📅 Tadbir: {event['name'] if event else reg['event_id']}",
+        f"👤 Ism: {user_name}",
+        f"🆔 Telegram ID: <code>{reg['user_id']}</code>",
+        f"🔗 Username: {username}",
+        "",
+        "<b>Javoblar:</b>",
+    ]
+    for ans in answers:
+        lines.append(f"• {ans['question_text']}: {ans['answer_text']}")
+
+    try:
+        await bot.send_message(
+            chat_id=ATTENDANCE_GROUP_ID,
+            text="\n".join(lines),
+            parse_mode="HTML",
+            reply_markup=attendance_mark_keyboard(reg_id),
+        )
+    except Exception as e:
+        logger.error(f"Attendance group notify error: {e}")
+
+
+async def attendance_mark_present(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer("Kelgan deb belgilandi ✅")
+    reg_id = int(update.callback_query.data.split(":")[2])
+    await db.set_registration_attendance(reg_id, "attended")
+
+
+async def attendance_mark_absent(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer("Kelmagan deb belgilandi ❌")
+    reg_id = int(update.callback_query.data.split(":")[2])
+    await db.set_registration_attendance(reg_id, "not_attended")
+
+
+async def handle_registration_unexpected(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "❌ Iltimos, savolga mos formatda javob bering (matn/tanlov/tugma)."
+    )
+    return UserStates.REG_QUESTION
+
+
+async def handle_payment_waiting_unexpected(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "❌ Bu bosqichda to'lov cheki rasmi yoki faylini yuboring."
+    )
+    return UserStates.PAYMENT_WAITING

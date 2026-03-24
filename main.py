@@ -1,5 +1,4 @@
 import logging
-import asyncio
 import json
 
 from telegram import Update
@@ -28,7 +27,7 @@ from handlers.admin_events import (
     event_sections_menu, section_delete_confirm, start_add_section,
     section_get_name, section_get_price, section_get_seats,
     upload_seating_image_start, save_seating_image,
-    show_event_link, event_registrations
+    show_event_link, event_registrations, export_event_registrations_excel
 )
 
 from handlers.admin_broadcast import (
@@ -46,7 +45,9 @@ from handlers.user_handlers import (
     reject_with_comment_start, reject_no_comment,
     handle_reject_comment, handle_support_message,
     admin_reply_to_user_start, admin_reply_to_user_send,
-    user_event_detail
+    user_event_detail, handle_contact_answer,
+    attendance_mark_present, attendance_mark_absent,
+    handle_registration_unexpected, handle_payment_waiting_unexpected
 )
 
 logging.basicConfig(
@@ -77,7 +78,7 @@ def build_application():
             AdminStates.EV_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ev_get_price)],
             AdminStates.EV_CHANNELS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, ev_add_channel),
-                CommandHandler("skip", lambda u, c: asyncio.ensure_future(_ev_go_to_q(u, c))),
+                CommandHandler("skip", _ev_go_to_q),
             ],
             AdminStates.EV_QUESTIONS_MENU: [
                 CallbackQueryHandler(ev_questions_template, pattern="^qtmpl:"),
@@ -248,13 +249,16 @@ def build_application():
         states={
             UserStates.REG_QUESTION: [
                 CallbackQueryHandler(handle_choice_answer, pattern="^ans:"),
+                MessageHandler(filters.CONTACT, handle_contact_answer),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_registration_answer),
+                MessageHandler(filters.ALL & ~filters.COMMAND, handle_registration_unexpected),
             ],
             UserStates.REG_SECTION_SELECT: [
                 CallbackQueryHandler(handle_section_selection, pattern="^selsect:"),
             ],
             UserStates.PAYMENT_WAITING: [
                 MessageHandler(filters.PHOTO | filters.Document.ALL, handle_payment_receipt),
+                MessageHandler(filters.ALL & ~filters.COMMAND, handle_payment_waiting_unexpected),
             ],
         },
         fallbacks=[],
@@ -292,6 +296,7 @@ def build_application():
     app.add_handler(CallbackQueryHandler(section_delete_confirm, pattern="^sdel:"))
     app.add_handler(CallbackQueryHandler(show_event_link, pattern="^event_link:"))
     app.add_handler(CallbackQueryHandler(event_registrations, pattern="^event_regs:"))
+    app.add_handler(CallbackQueryHandler(export_event_registrations_excel, pattern="^event_regs_export:"))
 
     # Admin management callbacks
     app.add_handler(CallbackQueryHandler(admins_list, pattern="^admin_admins$"))
@@ -305,6 +310,8 @@ def build_application():
     app.add_handler(CallbackQueryHandler(reject_with_comment_start, pattern="^reject_comment:"))
     app.add_handler(CallbackQueryHandler(reject_no_comment, pattern="^reject_no_comment:"))
     app.add_handler(CallbackQueryHandler(admin_reply_to_user_start, pattern="^reply_user:"))
+    app.add_handler(CallbackQueryHandler(attendance_mark_present, pattern="^att:yes:"))
+    app.add_handler(CallbackQueryHandler(attendance_mark_absent, pattern="^att:no:"))
 
     # Fallback message handlers for admins (reject comment, reply to user)
     app.add_handler(MessageHandler(
@@ -336,17 +343,12 @@ async def handle_admin_text_fallback(update: Update, ctx: ContextTypes.DEFAULT_T
         return
 
     # User support message after payment rejection
-    # Check if this user has a rejected payment
     events = await db.get_active_events()
     for ev in events:
         reg = await db.get_user_event_registration(user_id, ev["id"])
         if reg and reg["status"] == "payment_rejected":
             await handle_support_message(update, ctx)
             return
-
-    # If admin and nothing matches, show admin menu
-    if await db.is_admin(user_id):
-        await admin_panel(update, ctx)
 
 
 async def _ev_go_to_q(update, ctx):
